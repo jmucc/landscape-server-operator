@@ -2,9 +2,10 @@ include terraform/charm/Makefile
 include terraform/product/Makefile
 
 DIR_NAME := $(notdir $(shell pwd))
-BUNDLE_PATH ?= ./bundle-examples/postgres16.bundle.yaml
+BUNDLE_PATH ?= ./bundle-examples/internal-haproxy/internal-haproxy.bundle.yaml
 PLATFORM ?= ubuntu@24.04:amd64
 MODEL_NAME ?= $(DIR_NAME)-build
+LBAAS_MODEL_NAME ?= lbaas
 CLEAN_PLATFORM := $(subst :,-,$(PLATFORM))
 SKIP_BUILD ?= false
 SKIP_CLEAN ?= false
@@ -18,7 +19,9 @@ SKIP_CLEAN ?= false
 	lint \
 	terraform-check-all \
 	terraform-fix-all \
-	terraform-test-all
+	terraform-test-all \
+	lbaas \
+	clean-lbaas
 
 # Python testing and linting
 test:
@@ -52,19 +55,42 @@ deploy:
 	juju add-model $(MODEL_NAME)
 	juju deploy -m $(MODEL_NAME) $(BUNDLE_PATH)
 
+install-terraform:
+	@if command -v terraform >/dev/null 2>&1; then \
+		echo "Terraform is already installed, skipping install..."; \
+	else \
+		echo "Installing Terraform..."; \
+		snap install terraform --classic; \
+	fi
+
+clean-lbaas:
+	-juju destroy-model --no-prompt $(LBAAS_MODEL_NAME) \
+		--force --no-wait --destroy-storage
+	-cd bundle-examples/internal-haproxy && \
+	rm -rf *.tfstate && \
+	cd ../..
+
+
+lbaas: clean-lbaas install-terraform deploy
+	cd bundle-examples/internal-haproxy && \
+	terraform init && \
+	terraform apply -auto-approve \
+		-var model_name=$(MODEL_NAME) \
+		-var lbaas_model_name=$(LBAAS_MODEL_NAME)
+
 clean:
 	-rm -f landscape-server_$(CLEAN_PLATFORM).charm
 	-juju destroy-model --no-prompt $(MODEL_NAME) \
 		--force --no-wait --destroy-storage
 
-terraform-check-all:
+terraform-check-all: install-terraform
 	cd terraform/charm && $(MAKE) check-charm-module
 	cd terraform/product && $(MAKE) check-product-modules
 
-terraform-fix-all:
+terraform-fix-all: install-terraform
 	cd terraform/charm && $(MAKE) fix-charm-module
 	cd terraform/product && $(MAKE) fix-product-modules
 
-terraform-test-all:
+terraform-test-all: install-terraform
 	cd terraform/charm && $(MAKE) test-charm-module
 	cd terraform/product && $(MAKE) test-product-modules
