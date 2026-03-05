@@ -22,6 +22,7 @@ from tests.integration.helpers import (
     has_tls_certs_provider,
     restore_db_relations,
     supports_legacy_pg,
+    wait_for_service,
 )
 
 
@@ -253,6 +254,12 @@ def test_legacy_db_relation(juju: jubilant.Juju, bundle: None):
 
 
 def test_all_services_up(juju: jubilant.Juju, bundle: None):
+    """
+    All expected Landscape systemd services are active on every unit.
+
+    Uses `wait_for_service` rather than a one-shot check because Juju
+    reporting active does not guarantee the services have finished starting.
+    """
     juju.wait(jubilant.all_active, timeout=300)
 
     status = juju.status()
@@ -262,26 +269,14 @@ def test_all_services_up(juju: jubilant.Juju, bundle: None):
 
     for name, unit_status in units.items():
         for service in DEFAULT_SERVICES:
-            try:
-                juju.ssh(name, f"systemctl is-active {service}.service")
-            except Exception as e:
-                pytest.fail(f"Failed to run command on unit: {e}")
+            wait_for_service(juju, name, service)
 
         if enable_ubuntu_installer:
-            try:
-                juju.ssh(
-                    name,
-                    f"systemctl is-active {LANDSCAPE_UBUNTU_INSTALLER_ATTACH}.service",
-                )
-            except Exception as e:
-                pytest.fail(f"Failed to run command on unit: {e}")
+            wait_for_service(juju, name, LANDSCAPE_UBUNTU_INSTALLER_ATTACH)
 
         if unit_status.leader:
             for service in LEADER_SERVICES:
-                try:
-                    juju.ssh(name, f"systemctl is-active {service}.service")
-                except Exception as e:
-                    pytest.fail(f"Failed to run command on unit: {e}")
+                wait_for_service(juju, name, service)
 
 
 def test_ubuntu_installer_attach_service(juju: jubilant.Juju, bundle: None):
@@ -303,14 +298,7 @@ def test_ubuntu_installer_attach_service(juju: jubilant.Juju, bundle: None):
         )
         juju.wait(jubilant.all_active, timeout=300)
         for name in units.keys():
-            try:
-                juju.ssh(
-                    name,
-                    f"systemctl is-active {LANDSCAPE_UBUNTU_INSTALLER_ATTACH}.service",
-                )
-
-            except Exception as e:
-                pytest.fail(f"Failed to run command on unit: {e}")
+            wait_for_service(juju, name, LANDSCAPE_UBUNTU_INSTALLER_ATTACH)
 
     finally:
         restore_val = "true" if original else "false"
@@ -341,10 +329,7 @@ def test_ubuntu_installer_attach_toggle_no_maintenance(
         assert status.apps["landscape-server"].app_status.current == "active"
 
         for name in status.apps["landscape-server"].units.keys():
-            juju.ssh(
-                name,
-                f"systemctl is-active {LANDSCAPE_UBUNTU_INSTALLER_ATTACH}.service",
-            )
+            wait_for_service(juju, name, LANDSCAPE_UBUNTU_INSTALLER_ATTACH)
 
         juju.config(
             "landscape-server", values={"enable_ubuntu_installer_attach": "false"}
@@ -895,10 +880,7 @@ def test_haproxy_installed_and_configured(juju: jubilant.Juju, bundle: None):
             except Exception:
                 pytest.fail(f"Error file missing on {unit_name}: {error_file}")
 
-        try:
-            juju.ssh(unit_name, f"systemctl is-active {haproxy.HAPROXY_SERVICE}")
-        except Exception as e:
-            pytest.fail(f"HAProxy service not active on {unit_name}: {e}")
+        wait_for_service(juju, unit_name, haproxy.HAPROXY_SERVICE)
 
 
 def test_upgrade_action_updates_ppa(juju: jubilant.Juju, bundle: None):
