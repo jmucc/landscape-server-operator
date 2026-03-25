@@ -2133,3 +2133,15 @@ class TestOnUpgradeCharm:
 
         haproxy_install_fixture.assert_not_called()
         assert stored.ready.get("load-balancer-certificates") is True
+
+
+def test_action_get_service_conf(monkeypatch):
+    conf = {"stores": {"host": "localhost:5432", "user": "landscape"}}
+    monkeypatch.setattr("charm.read_service_conf", lambda: conf)
+
+    ctx = Context(LandscapeServerCharm)
+    ctx.run(ctx.on.action("get-service-conf"), State())
+
+    assert ctx.action_results is not None
+    assert "config" in ctx.action_results
+    assert json.loads(ctx.action_results["config"]) == conf

@@ -19,6 +19,7 @@ from tests.integration.helpers import (
     get_session,
     has_legacy_pg,
     has_modern_pg,
+    has_pgbouncer,
     has_tls_certs_provider,
     restore_db_relations,
     supports_legacy_pg,
@@ -251,6 +252,72 @@ def test_legacy_db_relation(juju: jubilant.Juju, bundle: None):
     assert "db" in relations
 
     restore_db_relations(juju, initial_relations)
+
+
+def test_pgbouncer_relation(juju: jubilant.Juju, bundle: None):
+    """
+    If PgBouncer is deployed, landscape-server connects to it via the `database`
+    endpoint rather than directly to PostgreSQL.
+    """
+    if not has_pgbouncer(juju):
+        pytest.skip("PgBouncer not present in this model, skipping...")
+
+    pg_relations = set(juju.status().apps["pgbouncer"].relations)
+    assert "database" in pg_relations, "pgbouncer should have a `database` relation"
+    assert (
+        "backend-database" in pg_relations
+    ), "pgbouncer should have a `backend-database` relation to PostgreSQL"
+
+    ls_relations = set(juju.status().apps["landscape-server"].relations)
+    assert (
+        "database" in ls_relations
+    ), "landscape-server should be related via the `database` endpoint"
+
+
+def test_get_service_conf_action(juju: jubilant.Juju, bundle: None):
+    """
+    The get-service-conf action returns a JSON-serialisable dict with the
+    expected top-level sections from service.conf.
+    """
+    juju.wait(jubilant.all_active, timeout=300)
+
+    result = juju.run("landscape-server/leader", "get-service-conf")
+    assert result.status == "completed"
+
+    config = json.loads(result.results["config"])
+    assert (
+        "stores" in config
+    ), f"Expected 'stores' section in service.conf, got: {list(config)}"
+
+
+def test_landscape_schema_migrated(juju: jubilant.Juju, bundle: None):
+    """
+    The Landscape database schema is present after deployment.
+
+    Reads the connection details from service.conf via the get-service-conf
+    action on the leader unit and runs a query to confirm the `account` table
+    (created by landscape-schema) exists. This works regardless of whether
+    pgbouncer or direct PostgreSQL is in use, since the host/port/user/password/
+    dbname come from whatever landscape-server is configured to connect to.
+    """
+    juju.wait(jubilant.all_active, timeout=300)
+
+    result = juju.run("landscape-server/leader", "get-service-conf")
+    stores = json.loads(result.results["config"])["stores"]
+    host, port = stores["host"].split(":")
+    password, user, dbname = stores["password"], stores["user"], stores["main"]
+
+    result = juju.ssh(
+        "landscape-server/leader",
+        f"PGPASSWORD={password} psql -h {host} -p {port} -U {user} -d {dbname}"
+        ' -tAc "SELECT COUNT(*) FROM information_schema.tables'
+        " WHERE table_schema = 'public' AND table_name = 'account';\"",
+    ).strip()
+
+    assert result == "1", (
+        "Expected the 'account' table to exist in the landscape database, "
+        f"got: {result!r}"
+    )
 
 
 def test_all_services_up(juju: jubilant.Juju, bundle: None):
